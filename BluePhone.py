@@ -226,13 +226,15 @@ class iOSAccess:
         run_command(['sudo', 'add-apt-repository', '-y', 'universe'])
         run_command(['sudo', 'apt-get', 'update', '-y'])
         
-        # Install all iOS tools
+        # Install all iOS tools including Avahi
         packages_to_install = [
             'libimobiledevice-utils',
             'libimobiledevice6',
             'usbmuxd',
             'libusbmuxd-tools',
             'ifuse',
+            'avahi-daemon',
+            'avahi-utils',
             'gstreamer1.0-tools',
             'gstreamer1.0-plugins-base',
             'gstreamer1.0-plugins-good',
@@ -262,11 +264,62 @@ class iOSAccess:
         else:
             print(f"{Colors.WARNING}⚠ usbmuxd may not be running properly{Colors.ENDC}")
         
+        # Setup and start Avahi daemon for AirPlay discovery
+        print(f"{Colors.OKCYAN}Setting up Avahi daemon (required for AirPlay)...{Colors.ENDC}")
+        run_command(['sudo', 'systemctl', 'restart', 'avahi-daemon'])
+        run_command(['sudo', 'systemctl', 'enable', 'avahi-daemon'])
+        
+        # Check if Avahi is running
+        result = run_command(['systemctl', 'is-active', 'avahi-daemon'])
+        if result and 'active' in result.stdout:
+            print(f"{Colors.OKGREEN}✓ Avahi daemon is running{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}⚠ Avahi daemon may not be running properly{Colors.ENDC}")
+        
+        # Configure firewall for AirPlay
+        print(f"{Colors.OKCYAN}Configuring firewall for AirPlay...{Colors.ENDC}")
+        self.configure_firewall()
+        
         # Add user to plugdev group
         username = os.environ.get('USER')
         if username:
             print(f"Adding {username} to plugdev group...")
             run_command(['sudo', 'usermod', '-a', '-G', 'plugdev', username])
+    
+    def configure_firewall(self):
+        """Configure firewall to allow AirPlay connections"""
+        # Check if ufw is installed
+        result = run_command(['which', 'ufw'])
+        if not result or result.returncode != 0:
+            print(f"{Colors.WARNING}UFW not installed, skipping firewall configuration{Colors.ENDC}")
+            return
+        
+        # Check if ufw is active
+        result = run_command(['sudo', 'ufw', 'status'])
+        if result and 'inactive' in result.stdout.lower():
+            print(f"{Colors.OKCYAN}Firewall is inactive, no configuration needed{Colors.ENDC}")
+            return
+        
+        print(f"{Colors.OKCYAN}Opening AirPlay ports in firewall...{Colors.ENDC}")
+        
+        # Allow AirPlay ports
+        ports = [
+            ('7000:7100/tcp', 'AirPlay TCP'),
+            ('7000:7100/udp', 'AirPlay UDP'),
+            ('5353/udp', 'mDNS'),
+            ('49152:65535/tcp', 'AirPlay streaming')
+        ]
+        
+        for port, description in ports:
+            result = run_command(['sudo', 'ufw', 'allow', port])
+            if result and result.returncode == 0:
+                print(f"{Colors.OKGREEN}✓ Opened {description} ({port}){Colors.ENDC}")
+            else:
+                print(f"{Colors.WARNING}⚠ Failed to open {description} ({port}){Colors.ENDC}")
+        
+        # Reload firewall
+        run_command(['sudo', 'ufw', 'reload'])
+        print(f"{Colors.OKGREEN}✓ Firewall configured for AirPlay{Colors.ENDC}")
     
     def check_uxplay(self):
         """Check if UxPlay is installed"""
@@ -410,20 +463,51 @@ class iOSAccess:
             else:
                 return
         
+        # Check network interface
+        print(f"\n{Colors.OKCYAN}Checking network configuration...{Colors.ENDC}")
+        result = run_command(['ip', 'addr', 'show'])
+        if result:
+            print(f"{Colors.OKBLUE}Available network interfaces:{Colors.ENDC}")
+            lines = result.stdout.split('\n')
+            interfaces = []
+            for line in lines:
+                if 'wlan' in line or 'wlp' in line or 'eth' in line or 'enp' in line:
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        iface = parts[1].strip().split('@')[0]
+                        if iface not in interfaces:
+                            interfaces.append(iface)
+                            print(f"  - {iface}")
+        
         print(f"\n{Colors.OKGREEN}Starting AirPlay receiver...{Colors.ENDC}")
         print(f"""{Colors.OKCYAN}
 Instructions:
-1. Make sure your iOS device and Linux machine are on the same WiFi network
+1. Make sure your iOS device and Linux machine are on the SAME WiFi network
 2. On your iOS device, swipe down from top-right (or up from bottom)
 3. Tap 'Screen Mirroring'
-4. Select 'UxPlay' from the list
-5. Your screen should appear on the Linux machine
+4. Wait 10-15 seconds for 'UxPlay' to appear in the list
+5. Tap 'UxPlay' to connect
+6. Your screen should appear on the Linux machine
+
+Troubleshooting:
+- If 'UxPlay' doesn't appear, make sure both devices are on the same WiFi
+- Try restarting UxPlay (Ctrl+C and run again)
+- Check that Avahi daemon is running: systemctl status avahi-daemon
 
 Press Ctrl+C to stop screen mirroring
 {Colors.ENDC}""")
         
+        # Check if Avahi is running
+        result = run_command(['systemctl', 'is-active', 'avahi-daemon'])
+        if not result or 'active' not in result.stdout:
+            print(f"{Colors.WARNING}⚠ Avahi daemon is not running. Starting it now...{Colors.ENDC}")
+            run_command(['sudo', 'systemctl', 'start', 'avahi-daemon'])
+            time.sleep(2)
+        
         try:
-            run_command(['uxplay', '-n', 'UxPlay'], capture=False)
+            # Run UxPlay with better compatibility options
+            print(f"{Colors.OKGREEN}Starting UxPlay...{Colors.ENDC}")
+            run_command(['uxplay', '-n', 'UxPlay', '-v'], capture=False)
         except KeyboardInterrupt:
             print(f"\n{Colors.OKCYAN}Screen mirror stopped{Colors.ENDC}")
     
@@ -478,6 +562,75 @@ Press Ctrl+C to stop screen mirroring
                 print(f"{Colors.OKGREEN}✓ Pairing validated!{Colors.ENDC}")
         else:
             print(f"{Colors.FAIL}✗ Pairing failed. Make sure you tapped 'Trust' on your device{Colors.ENDC}")
+    
+    def network_diagnostics(self):
+        """Run network diagnostics for AirPlay troubleshooting"""
+        print(f"\n{Colors.OKBLUE}=== Network Diagnostics for AirPlay ==={Colors.ENDC}\n")
+        
+        # Check network interfaces
+        print(f"{Colors.OKCYAN}1. Network Interfaces:{Colors.ENDC}")
+        result = run_command(['ip', 'addr', 'show'])
+        if result:
+            lines = result.stdout.split('\n')
+            for line in lines:
+                if 'inet ' in line and '127.0.0.1' not in line:
+                    print(f"   {line.strip()}")
+        
+        # Check Avahi status
+        print(f"\n{Colors.OKCYAN}2. Avahi Daemon Status:{Colors.ENDC}")
+        result = run_command(['systemctl', 'is-active', 'avahi-daemon'])
+        if result and 'active' in result.stdout:
+            print(f"   {Colors.OKGREEN}✓ Avahi is running{Colors.ENDC}")
+        else:
+            print(f"   {Colors.FAIL}✗ Avahi is NOT running{Colors.ENDC}")
+            response = input(f"\n{Colors.OKCYAN}Start Avahi daemon? (y/n): {Colors.ENDC}")
+            if response.lower() == 'y':
+                run_command(['sudo', 'systemctl', 'start', 'avahi-daemon'])
+                print(f"   {Colors.OKGREEN}✓ Avahi started{Colors.ENDC}")
+        
+        # Check for AirPlay services
+        print(f"\n{Colors.OKCYAN}3. Scanning for AirPlay devices on network...{Colors.ENDC}")
+        result = run_command(['avahi-browse', '-a', '-t', '-r'], capture=True)
+        if result:
+            if '_airplay' in result.stdout.lower() or '_raop' in result.stdout.lower():
+                print(f"   {Colors.OKGREEN}✓ AirPlay services detected on network{Colors.ENDC}")
+            else:
+                print(f"   {Colors.WARNING}⚠ No AirPlay services detected{Colors.ENDC}")
+        
+        # Check firewall status
+        print(f"\n{Colors.OKCYAN}4. Firewall Status:{Colors.ENDC}")
+        result = run_command(['sudo', 'ufw', 'status'])
+        if result:
+            if 'inactive' in result.stdout.lower():
+                print(f"   {Colors.OKGREEN}✓ Firewall is inactive (no blocking){Colors.ENDC}")
+            else:
+                print(f"   {Colors.WARNING}Firewall is active{Colors.ENDC}")
+                if '7000' in result.stdout and '5353' in result.stdout:
+                    print(f"   {Colors.OKGREEN}✓ AirPlay ports are open{Colors.ENDC}")
+                else:
+                    print(f"   {Colors.WARNING}⚠ AirPlay ports may be blocked{Colors.ENDC}")
+                    response = input(f"\n{Colors.OKCYAN}Open AirPlay ports? (y/n): {Colors.ENDC}")
+                    if response.lower() == 'y':
+                        self.configure_firewall()
+        
+        # Check if UxPlay is installed
+        print(f"\n{Colors.OKCYAN}5. UxPlay Status:{Colors.ENDC}")
+        if self.check_uxplay():
+            print(f"   {Colors.OKGREEN}✓ UxPlay is installed{Colors.ENDC}")
+        else:
+            print(f"   {Colors.FAIL}✗ UxPlay is NOT installed{Colors.ENDC}")
+        
+        # Recommendations
+        print(f"\n{Colors.OKBLUE}=== Recommendations ==={Colors.ENDC}")
+        print(f"""
+{Colors.OKCYAN}For successful AirPlay mirroring:{Colors.ENDC}
+1. Ensure iPhone and Linux are on the SAME WiFi network
+2. Make sure Avahi daemon is running (checked above)
+3. Ensure firewall allows AirPlay ports (checked above)
+4. When starting UxPlay, wait 10-15 seconds before checking iPhone
+5. On iPhone: Settings → WiFi → Verify network name matches Linux
+6. Try restarting UxPlay if device doesn't appear
+        """)
 
 def print_banner():
     banner = f"""
@@ -538,6 +691,7 @@ def print_ios_menu():
 {Colors.OKGREEN}[5]{Colors.ENDC}  Screen Mirror (AirPlay)
 {Colors.OKGREEN}[6]{Colors.ENDC}  Mount Device Filesystem
 {Colors.OKGREEN}[7]{Colors.ENDC}  Create Device Backup
+{Colors.OKGREEN}[8]{Colors.ENDC}  Network Diagnostics
 {Colors.OKGREEN}[0]{Colors.ENDC}  Back to Main Menu
 
 """
@@ -595,6 +749,8 @@ def ios_menu(ios):
         elif choice == '7':
             backup_path = input(f"{Colors.OKCYAN}Backup path (default: ./ios_backup): {Colors.ENDC}") or './ios_backup'
             ios.backup_device(backup_path)
+        elif choice == '8':
+            ios.network_diagnostics()
         elif choice == '0':
             break
         else:
