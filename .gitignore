@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+ios_backup/
+*.mp4
+android_screenshot*.png
+ios_screenshot*.png
+*.log
