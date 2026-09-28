@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bluephone"
+dynamic = ["version"]
+description = "Manage your own Android and iOS devices from Linux (adb, scrcpy, libimobiledevice, UxPlay)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+classifiers = ["Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+bluephone = "bluephone.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "bluephone.VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["bluephone*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
